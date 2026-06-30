@@ -1,6 +1,5 @@
 """
-NeuroTopology - Day 2: Neural Network Layers & Loss Functions
-Tensor engine er upor built ML layers.
+NeuroTopology - Day 2/3: Neural Network Layers & Loss Functions
 """
 
 import numpy as np
@@ -9,7 +8,7 @@ from .tensor import Tensor
 
 
 class Module:
-    """Base class for all neural network modules. (PyTorch style)"""
+    """Base class for all neural network modules."""
     
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -18,7 +17,6 @@ class Module:
         raise NotImplementedError
     
     def parameters(self) -> List[Tensor]:
-        """Return all trainable parameters."""
         params = []
         for attr_name in dir(self):
             attr = getattr(self, attr_name)
@@ -35,7 +33,6 @@ class Module:
         return params
     
     def zero_grad(self) -> None:
-        """Zero gradients of all parameters."""
         for p in self.parameters():
             p.zero_grad()
 
@@ -45,7 +42,6 @@ class Linear(Module):
     
     def __init__(self, in_features: int, out_features: int):
         super().__init__()
-        # Xavier/Glorot initialization
         limit = np.sqrt(6.0 / (in_features + out_features))
         self.W = Tensor(
             np.random.uniform(-limit, limit, (in_features, out_features)).astype(np.float32),
@@ -75,6 +71,36 @@ class Tanh(Module):
         return x.tanh()
 
 
+class Softmax(Module):
+    def forward(self, x: Tensor) -> Tensor:
+        # Numerical stability
+        shifted = x.data - np.max(x.data, axis=-1, keepdims=True)
+        exp = np.exp(shifted)
+        probs = exp / np.sum(exp, axis=-1, keepdims=True)
+        return Tensor(probs, requires_grad=x.requires_grad, _children=(x,), _op="softmax")
+
+
+class Dropout(Module):
+    def __init__(self, p: float = 0.5):
+        super().__init__()
+        self.p = p
+        self.mask = None
+        self.training = True
+    
+    def forward(self, x: Tensor) -> Tensor:
+        if not self.training or self.p == 0:
+            return x
+        self.mask = (np.random.rand(*x.data.shape) > self.p).astype(np.float32)
+        out = Tensor(x.data * self.mask / (1 - self.p), requires_grad=x.requires_grad, _children=(x,), _op="dropout")
+        
+        def _backward():
+            if x.requires_grad:
+                grad = out.grad * self.mask / (1 - self.p)
+                x.grad = x.grad + grad if x.grad is not None else grad
+        out._backward = _backward
+        return out
+
+
 class Sequential(Module):
     def __init__(self, *layers: Module):
         super().__init__()
@@ -90,6 +116,15 @@ class Sequential(Module):
         for layer in self.layers:
             params.extend(layer.parameters())
         return params
+    
+    def train(self, mode: bool = True):
+        for layer in self.layers:
+            if hasattr(layer, 'training'):
+                layer.training = mode
+        return self
+    
+    def eval(self):
+        return self.train(False)
 
 
 class MSELoss(Module):
@@ -105,15 +140,12 @@ class CrossEntropyLoss(Module):
     logits: raw model output, shape (batch, num_classes)
     """
     def forward(self, logits: Tensor, y_true: np.ndarray) -> Tensor:
-        # Numerical stability: shift by max
         shifted = logits.data - np.max(logits.data, axis=1, keepdims=True)
         exp_shifted = np.exp(shifted)
         softmax = exp_shifted / np.sum(exp_shifted, axis=1, keepdims=True)
         
-        # Log-softmax
         log_softmax = shifted - np.log(np.sum(exp_shifted, axis=1, keepdims=True))
         
-        # Negative log likelihood
         batch_size = logits.data.shape[0]
         correct_log_probs = log_softmax[np.arange(batch_size), y_true]
         loss_val = -np.mean(correct_log_probs)
