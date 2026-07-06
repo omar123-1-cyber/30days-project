@@ -138,4 +138,28 @@ class PPOAgent(BaseAgent):
             surr1 = ratio_t * adv_t
             surr2 = Tensor(np.clip(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)) * adv_t
             policy_loss = -Tensor(np.minimum(surr1.data, surr2.data))
+
+            
+            # Value loss
+            returns_t = Tensor(returns.reshape(-1, 1))
+            value_loss = ((value - returns_t) ** 2).mean()
+            
+            # Entropy
+            entropy = -np.sum(policy.data * np.log(policy.data + 1e-8), axis=1).mean()
+            entropy_t = Tensor([entropy], requires_grad=False)
+            
+            loss = policy_loss.mean() + self.value_coef * value_loss - self.entropy_coef * entropy_t
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+        
+        self.trajectory = []
+        
+        return {'loss': total_loss / self.epochs_per_update}
+    
+    def parameters(self):
+        return self.network.parameters()
             
